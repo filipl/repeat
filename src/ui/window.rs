@@ -1,0 +1,293 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
+use crate::db::{ClipContents, Database};
+use crate::options::{Color, Options};
+use crate::ui;
+use breadx::protocol::xproto::{ModMask, SendEventRequest};
+use breadx::protocol::{self, xproto::EventMask, Event};
+use breadx::{prelude::*, protocol::xproto};
+use breadx_keysyms::{keysyms, KeyboardState};
+use log::{debug, error};
+
+pub struct Window {
+    keyboard_state: KeyboardState,
+    window: xproto::Window,
+    focused_window: xproto::Window,
+    root: xproto::Window,
+    database: Arc<Database>,
+    canvas: ui::canvas::Canvas,
+    input: String,
+    modes: Modes,
+}
+
+struct Modes {
+    shift: bool,
+    ctrl: bool,
+}
+
+impl Window {
+    pub fn create<D: Display>(
+        display: &mut D,
+        database: Arc<Database>,
+        options: &Options,
+    ) -> Result<Window, Box<dyn std::error::Error>> {
+        let focused_window = get_focused_window(display)?;
+        let geom = get_active_screen_geom(display)?;
+        debug!("active screen geom {:?}", geom);
+
+        let wid = display.generate_xid()?;
+        let def_screen = display.default_screen();
+        let root = def_screen.root;
+        let width = 800u16;
+        let height = 600u16;
+        display.create_window_checked(
+            0,
+            wid,
+            root,
+            (geom.x + geom.width as i16 / 2i16 - width as i16 / 2i16).into(),
+            (geom.y + geom.height as i16 / 2i16 - height as i16 / 2i16).into(),
+            width,
+            height,
+            2,
+            xproto::WindowClass::COPY_FROM_PARENT,
+            0,
+            xproto::CreateWindowAux::new()
+                .background_pixel(display.default_screen().white_pixel)
+                .override_redirect(1)
+                .event_mask(
+                    EventMask::EXPOSURE
+                        | EventMask::KEY_PRESS
+                        | EventMask::KEY_RELEASE
+                        | EventMask::VISIBILITY_CHANGE
+                        | EventMask::FOCUS_CHANGE,
+                ),
+        )?;
+
+        let canvas = ui::canvas::Canvas::new(display, wid, width, height, &options)?;
+        let keyboard_state = KeyboardState::new(display)?;
+
+        let mut w = Window {
+            keyboard_state,
+            window: wid,
+            focused_window,
+            root,
+            database,
+            canvas,
+            input: String::new(),
+            modes: Modes {
+                shift: false,
+                ctrl: false,
+            },
+        };
+
+        w.redraw();
+        w.canvas.draw(display)?;
+        w.show(display)?;
+
+        Ok(w)
+    }
+
+    pub fn hide<D: Display>(&self, display: &mut D) -> breadx::Result<()> {
+        display.unmap_window_checked(self.window)
+    }
+
+    pub fn show<D: Display>(&mut self, display: &mut D) -> breadx::Result<()> {
+        let focused_window = get_focused_window(display)?;
+        self.focused_window = focused_window;
+
+        display.map_window_checked(self.window)?;
+        let cookie = display.send_void_request(
+            xproto::SetInputFocusRequest {
+                focus: self.window,
+                revert_to: xproto::InputFocus::PARENT,
+                ..Default::default()
+            },
+            true,
+        )?;
+        display.wait_for_reply(cookie)
+    }
+
+    fn redraw(&mut self) {
+        self.canvas.clear();
+        self.canvas.draw_text(&self.input, Color::red(), 0);
+        let max_rows = self.canvas.text_rows();
+        for (i, clip) in self.database.clips().iter().enumerate() {
+            if i > max_rows {
+                break;
+            }
+            match &clip.contents {
+                ClipContents::Text(text) => {
+                    self.canvas
+                        .draw_text(&format!("{} {}", i, text), Color::white(), i as u16 + 1);
+                }
+            }
+        }
+    }
+
+    pub fn handle_event<D: AsyncDisplay>(
+        &mut self,
+        display: &mut D,
+        event: &Event,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        match event {
+            Event::KeyPress(kp) => {
+                let sym = self.keyboard_state.symbol(display, kp.detail, 0)?;
+                let redraw = match sym {
+                    keysyms::KEY_Escape => {
+                        self.hide(display)?;
+                        focus_window(display, self.focused_window)?;
+                        return Ok(false);
+                    }
+                    keysyms::KEY_BackSpace => {
+                        self.input.pop();
+                        true
+                    }
+                    keysyms::KEY_Return => {
+                        self.hide(display)?;
+                        focus_window(display, self.focused_window)?;
+                        // Send Shift + Insert
+                        send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT)?;
+                        return Ok(false);
+                    }
+                    key => {
+                        if let Some(char) = char::from_u32(key) {
+                            self.input.push(char);
+                        }
+                        true
+                    }
+                };
+                if redraw {
+                    self.redraw();
+                    self.canvas.draw(display)?;
+                }
+            }
+            Event::Expose(ee) if ee.window == self.window => {
+                self.canvas.draw(display)?;
+            }
+            Event::FocusOut(_fe) => {
+                focus_window(display, self.window)?;
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+}
+
+#[derive(Debug)]
+struct Geometry {
+    x: i16,
+    y: i16,
+    width: u16,
+    height: u16,
+}
+
+// TODO: Take a keysym instead and look up the keycode
+fn send_key<D: Display>(
+    dpy: &mut D,
+    window: xproto::Window,
+    root: xproto::Window,
+    key: xproto::Keycode,
+    modmask: ModMask,
+) -> breadx::Result<()> {
+    let mut event = xproto::KeyPressEvent {
+        response_type: xproto::KEY_PRESS_EVENT,
+        detail: key,
+        sequence: 0,
+        time: 0, // TODO: Need to set this?
+        root,
+        event: window,
+        child: 0,
+        root_x: 1,
+        root_y: 1,
+        event_x: 1,
+        event_y: 1,
+        state: modmask.into(),
+        same_screen: true,
+    };
+    let press_request = SendEventRequest {
+        propagate: true,
+        destination: window,
+        event_mask: EventMask::KEY_PRESS.into(),
+        event: Cow::Owned(event.into()),
+    };
+    let press_cookie = dpy.send_void_request(press_request, false)?;
+    dpy.wait_for_reply(press_cookie)?;
+
+    event.response_type = xproto::KEY_RELEASE_EVENT;
+    let release_request = SendEventRequest {
+        propagate: true,
+        destination: window,
+        event_mask: EventMask::KEY_RELEASE.into(),
+        event: Cow::Owned(event.into()),
+    };
+    let release_cookie = dpy.send_void_request(release_request, false)?;
+    dpy.wait_for_reply(release_cookie)
+}
+
+fn focus_window<D: Display>(dpy: &mut D, window: xproto::Window) -> breadx::Result<()> {
+    let cookie = dpy.send_void_request(
+        xproto::SetInputFocusRequest {
+            focus: window,
+            revert_to: xproto::InputFocus::PARENT,
+            ..Default::default()
+        },
+        false,
+    )?;
+    dpy.wait_for_reply(cookie)
+}
+
+fn get_focused_window<D: Display>(connection: &mut D) -> breadx::Result<xproto::Window> {
+    // TODO: grab and ungrab with drop
+    //connection.grab_server_checked()?;
+    let focus = connection.get_input_focus()?;
+    connection.wait_for_reply(focus).map(|r| r.focus)
+    //connection.ungrab_server_checked()?
+}
+
+fn get_active_screen_geom<D: Display>(connection: &mut D) -> breadx::Result<Geometry> {
+    let focus = get_focused_window(connection)?;
+    let resources = {
+        let request = protocol::randr::GetScreenResourcesRequest { window: focus };
+        let cookie = connection.send_reply_request(request)?;
+        connection.wait_for_reply(cookie)?
+    };
+
+    let geom = connection.get_geometry_immediate(focus)?;
+    let absolute = connection.translate_coordinates_immediate(focus, geom.root, geom.x, geom.y)?;
+
+    // TODO: Perhaps only read until we've found what we're looking for
+    let mut crtcs = Vec::new();
+    for crtc in resources.crtcs.iter() {
+        let request = protocol::randr::GetCrtcInfoRequest {
+            crtc: crtc.clone(),
+            config_timestamp: 0,
+        };
+        let cookie = connection.send_reply_request(request)?;
+        let reply = connection.wait_for_reply(cookie)?;
+        if !reply.outputs.is_empty() {
+            debug!("crtc {:?}", reply);
+            crtcs.push(reply);
+        }
+    }
+
+    let active_crtc = crtcs
+        .iter()
+        .find(|crtc| {
+            crtc.y <= absolute.dst_y
+                && crtc.x <= absolute.dst_x
+                && (crtc.y + crtc.height as i16) >= absolute.dst_y
+                && (crtc.x + crtc.width as i16) >= absolute.dst_x
+        })
+        .unwrap_or_else(|| {
+            error!("unable to find active screen - taking first");
+            crtcs.first().unwrap()
+        });
+
+    Ok(Geometry {
+        x: active_crtc.x,
+        y: active_crtc.y,
+        width: active_crtc.width,
+        height: active_crtc.height,
+    })
+}

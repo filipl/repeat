@@ -1,0 +1,18 @@
+[package]
+name = "repeat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+x11-clipboard = "0.7.0"
+breadx = { version = "3.1.0", features = ["std", "randr", "xkb", "tokio-support"] }
+breadx-image = { version = "0.1", features = ["async"] }
+breadx-keysyms = { version = "0.1", features = ["async"] }
+font-loader = "0.11.0"
+guardian = "1.0.2"
+rusttype = "0.9"
+env_logger = "0.10"
+log = "0.4"
+tarpc = { version = "0.31", features = ["serde-transport", "serde-transport-json", "unix"] }
+tokio = { version = "1.22", features = ["full"] }
+futures = "0.3"
