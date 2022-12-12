@@ -3,18 +3,21 @@
 mod clipboard;
 mod db;
 mod options;
-mod ui;
 mod rpc;
+mod ui;
 
-use std::borrow::BorrowMut;
-use std::env;
+use log::{debug, error, info, trace};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{env, thread};
 use x11_clipboard::Clipboard;
-use log::{debug, info, trace};
 
 use crate::ui::Window;
-use breadx::{display::DisplayConnection, prelude::*};
+use breadx::prelude::*;
 use breadx::rt_support::tokio_support;
+use futures::future::{AbortHandle, Abortable};
+use futures::StreamExt;
+use tokio::sync::Mutex as AsyncMutex;
 
 fn monitor(primary: bool) {
     let clipboard = Clipboard::new().unwrap();
@@ -82,34 +85,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // TODO: use connection for clipboarding
-    let mut connection = tokio_support::connect(None).await?;
-    //let mut connection = Arc::new(Mutex::new(DisplayConnection::connect(None)?));
-    //let mut connection = Arc::new(Mutex::new(tokio_support::connect(None).await?));
+    let connection = Arc::new(AsyncMutex::new(tokio_support::connect(None).await?));
     let window: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
-        //Some(Window::create(&mut *connection.lock().unwrap(), database.clone(), &options)?);
+        //Arc::new(Mutex::new(
+        //    Some(Window::create(&mut *connection.lock().await, database.clone(), &options).await?)));
 
-    let mut running = true;
+    let (rpc_sender, mut rpc_receiver) = futures::channel::mpsc::channel::<rpc::Message>(10);
 
-    rpc::start_server("/tmp/repeat.socket", Box::new(connection), window.clone()).await?;
+    rpc::start_server("/tmp/repeat.socket", rpc_sender).await?;
 
-    while running {
-        //let mut unlocked = connection.lock().unwrap();
-        let event = connection.wait_for_event().await?;
+    loop {
+        tokio::select! {
+            // incoming X11 events
+            ev = async { connection.lock().await.wait_for_event().await } => {
+                let event = ev?;
 
-        // update any open windows
-        let mut locked_window = window.lock().unwrap();
-        let keep_open = match locked_window.as_mut() {
-            Some(w) => w.handle_event(connection, &event)?,
-            _ => true,
-        };
-        if !keep_open {
-            debug!("closing window");
-            *locked_window = None;
-            running = false;
+                trace!("event: {:?}", event);
+
+                // update any open windows
+                let mut locked_window = window.lock().unwrap();
+                let keep_open = match locked_window.as_mut() {
+                    Some(w) => {
+                        let mut c = connection.lock().await;
+                        let keep = w.handle_event(&mut *c, &event).await?;
+                        if !keep {
+                            w.destroy(&mut *c);
+                        }
+                        keep
+                    },
+                    _ => true,
+                };
+                if !keep_open {
+                    debug!("closing window");
+                    *locked_window = None;
+                }
+
+            }
+
+            // RPC messages
+            command = rpc_receiver.next() => {
+                trace!("got a command {:?}", command);
+                match command {
+                    Some(rpc::Message::Show) => {
+                        info!("showing window");
+                        let mut locked_window = window.lock().unwrap();
+                        if locked_window.is_none() {
+                            *locked_window = Some(Window::create(&mut *connection.lock().await, database.clone(), &options).await?);
+                        };
+                    }
+                    None => {
+                        error!("rpc server shut down?");
+                    }
+                }
+            }
         }
-
-        trace!("event: {:?}", event)
     }
-
-    Ok(())
 }

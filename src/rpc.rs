@@ -1,14 +1,22 @@
-use futures::{future, prelude::*};
-use log::{debug, info};
+use std::borrow::BorrowMut;
+use std::cell::RefCell;
 use std::error::Error;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use breadx::display::{AsyncDisplay, DisplayConnection};
+
+use breadx::display::DisplayConnection;
+use futures::channel::mpsc::Sender;
+use futures::{future, prelude::*};
+use log::{debug, error};
 use tarpc::serde_transport::unix::listen;
 use tarpc::server::Channel;
 use tarpc::tokio_serde::formats::Json;
 use tarpc::{client, context, server};
 use tokio::io::unix::AsyncFd;
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::db::Database;
+use crate::options::Options;
 use crate::ui::Window;
 
 #[tarpc::service]
@@ -18,33 +26,38 @@ pub trait Manager {
 
 #[derive(Clone)]
 struct Server {
-    dpy: Box<dyn AsyncDisplay>,
-    window: Arc<Mutex<Option<Window>>>,
+    sender: Arc<AsyncMutex<Sender<Message>>>,
+}
+
+#[derive(Debug)]
+pub enum Message {
+    Show,
 }
 
 #[tarpc::server]
 impl Manager for Server {
     async fn show(self, _: context::Context) {
-        debug!("showing window");
+        debug!("trying to show window");
 
-        //let dpy = self.dpy.lock().unwrap();
-        let window = self.window.lock().unwrap();
-        let new_window = match *window {
-            None => {}
-            Some(_) => {
-                info!("it's already showing - won't do anything");
-            }
-        };
+        {
+            debug!("showing window");
 
-        debug!("showed window");
+            let _ = self.sender.lock().await.send(Message::Show).await;
+
+            debug!("showed window");
+        }
     }
 }
 
-pub async fn start_server<P: AsRef<Path>>(path: P, dpy: Box<dyn AsyncDisplay>, window: Arc<Mutex<Option<Window>>>) -> Result<(), Box<dyn Error>> {
+pub async fn start_server<P: AsRef<Path>>(
+    path: P,
+    sender: Sender<Message>,
+) -> Result<(), Box<dyn Error>> {
     if path.as_ref().exists() {
         std::fs::remove_file(&path)?;
     }
 
+    let asender = Arc::new(AsyncMutex::new(sender));
     let listener = listen(path, Json::default).await?;
     tokio::spawn(
         listener
@@ -52,8 +65,7 @@ pub async fn start_server<P: AsRef<Path>>(path: P, dpy: Box<dyn AsyncDisplay>, w
             .map(server::BaseChannel::with_defaults)
             .map(move |channel| {
                 let server = Server {
-                    dpy,
-                    window: window.clone()
+                    sender: asender.clone(),
                 };
                 channel.execute(server.serve())
             })

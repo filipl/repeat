@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::error::Error;
 use std::sync::Arc;
 
 use crate::db::{ClipContents, Database};
@@ -27,16 +28,16 @@ struct Modes {
 }
 
 impl Window {
-    pub fn create<D: Display>(
+    pub async fn create<D: AsyncDisplay>(
         display: &mut D,
         database: Arc<Database>,
         options: &Options,
-    ) -> Result<Window, Box<dyn std::error::Error>> {
-        let focused_window = get_focused_window(display)?;
-        let geom = get_active_screen_geom(display)?;
+    ) -> Result<Window, Box<dyn Error>> {
+        let focused_window = get_focused_window(display).await?;
+        let geom = get_active_screen_geom(display).await?;
         debug!("active screen geom {:?}", geom);
 
-        let wid = display.generate_xid()?;
+        let wid = display.generate_xid().await?;
         let def_screen = display.default_screen();
         let root = def_screen.root;
         let width = 800u16;
@@ -62,10 +63,10 @@ impl Window {
                         | EventMask::VISIBILITY_CHANGE
                         | EventMask::FOCUS_CHANGE,
                 ),
-        )?;
+        ).await?;
 
-        let canvas = ui::canvas::Canvas::new(display, wid, width, height, &options)?;
-        let keyboard_state = KeyboardState::new(display)?;
+        let canvas = ui::canvas::Canvas::new(display, wid, width, height, &options).await?;
+        let keyboard_state = KeyboardState::new_async(display).await?;
 
         let mut w = Window {
             keyboard_state,
@@ -82,21 +83,25 @@ impl Window {
         };
 
         w.redraw();
-        w.canvas.draw(display)?;
-        w.show(display)?;
+        w.canvas.draw(display).await?;
+        w.show(display).await?;
 
         Ok(w)
     }
 
-    pub fn hide<D: Display>(&self, display: &mut D) -> breadx::Result<()> {
-        display.unmap_window_checked(self.window)
+    pub async fn hide<D: AsyncDisplay>(&self, display: &mut D) -> breadx::Result<()> {
+        display.unmap_window_checked(self.window).await
     }
 
-    pub fn show<D: Display>(&mut self, display: &mut D) -> breadx::Result<()> {
-        let focused_window = get_focused_window(display)?;
+    pub async fn destroy<D: AsyncDisplay>(&self, display: &mut D) -> breadx::Result<()> {
+        display.destroy_window_checked(self.window).await
+    }
+
+    pub async fn show<D: AsyncDisplay>(&mut self, display: &mut D) -> breadx::Result<()> {
+        let focused_window = get_focused_window(display).await?;
         self.focused_window = focused_window;
 
-        display.map_window_checked(self.window)?;
+        display.map_window_checked(self.window).await?;
         let cookie = display.send_void_request(
             xproto::SetInputFocusRequest {
                 focus: self.window,
@@ -104,8 +109,8 @@ impl Window {
                 ..Default::default()
             },
             true,
-        )?;
-        display.wait_for_reply(cookie)
+        ).await?;
+        display.wait_for_reply(cookie).await
     }
 
     fn redraw(&mut self) {
@@ -125,18 +130,18 @@ impl Window {
         }
     }
 
-    pub fn handle_event<D: AsyncDisplay>(
+    pub async fn handle_event<D: AsyncDisplay>(
         &mut self,
         display: &mut D,
         event: &Event,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
+    ) -> Result<bool, Box<dyn Error>> {
         match event {
             Event::KeyPress(kp) => {
-                let sym = self.keyboard_state.symbol(display, kp.detail, 0)?;
+                let sym = self.keyboard_state.symbol_async(display, kp.detail, 0).await?;
                 let redraw = match sym {
                     keysyms::KEY_Escape => {
-                        self.hide(display)?;
-                        focus_window(display, self.focused_window)?;
+                        self.hide(display).await?;
+                        focus_window(display, self.focused_window).await?;
                         return Ok(false);
                     }
                     keysyms::KEY_BackSpace => {
@@ -144,10 +149,10 @@ impl Window {
                         true
                     }
                     keysyms::KEY_Return => {
-                        self.hide(display)?;
-                        focus_window(display, self.focused_window)?;
+                        self.hide(display).await?;
+                        focus_window(display, self.focused_window).await?;
                         // Send Shift + Insert
-                        send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT)?;
+                        send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
                         return Ok(false);
                     }
                     key => {
@@ -159,14 +164,14 @@ impl Window {
                 };
                 if redraw {
                     self.redraw();
-                    self.canvas.draw(display)?;
+                    self.canvas.draw(display).await?;
                 }
             }
             Event::Expose(ee) if ee.window == self.window => {
-                self.canvas.draw(display)?;
+                self.canvas.draw(display).await?;
             }
             Event::FocusOut(_fe) => {
-                focus_window(display, self.window)?;
+                focus_window(display, self.window).await?;
             }
             _ => {}
         }
@@ -183,7 +188,7 @@ struct Geometry {
 }
 
 // TODO: Take a keysym instead and look up the keycode
-fn send_key<D: Display>(
+async fn send_key<D: AsyncDisplay>(
     dpy: &mut D,
     window: xproto::Window,
     root: xproto::Window,
@@ -211,8 +216,8 @@ fn send_key<D: Display>(
         event_mask: EventMask::KEY_PRESS.into(),
         event: Cow::Owned(event.into()),
     };
-    let press_cookie = dpy.send_void_request(press_request, false)?;
-    dpy.wait_for_reply(press_cookie)?;
+    let press_cookie = dpy.send_void_request(press_request, false).await?;
+    dpy.wait_for_reply(press_cookie).await?;
 
     event.response_type = xproto::KEY_RELEASE_EVENT;
     let release_request = SendEventRequest {
@@ -221,11 +226,11 @@ fn send_key<D: Display>(
         event_mask: EventMask::KEY_RELEASE.into(),
         event: Cow::Owned(event.into()),
     };
-    let release_cookie = dpy.send_void_request(release_request, false)?;
-    dpy.wait_for_reply(release_cookie)
+    let release_cookie = dpy.send_void_request(release_request, false).await?;
+    dpy.wait_for_reply(release_cookie).await
 }
 
-fn focus_window<D: Display>(dpy: &mut D, window: xproto::Window) -> breadx::Result<()> {
+async fn focus_window<D: AsyncDisplay>(dpy: &mut D, window: xproto::Window) -> breadx::Result<()> {
     let cookie = dpy.send_void_request(
         xproto::SetInputFocusRequest {
             focus: window,
@@ -233,28 +238,28 @@ fn focus_window<D: Display>(dpy: &mut D, window: xproto::Window) -> breadx::Resu
             ..Default::default()
         },
         false,
-    )?;
-    dpy.wait_for_reply(cookie)
+    ).await?;
+    dpy.wait_for_reply(cookie).await
 }
 
-fn get_focused_window<D: Display>(connection: &mut D) -> breadx::Result<xproto::Window> {
+async fn get_focused_window<D: AsyncDisplay>(connection: &mut D) -> breadx::Result<xproto::Window> {
     // TODO: grab and ungrab with drop
     //connection.grab_server_checked()?;
-    let focus = connection.get_input_focus()?;
-    connection.wait_for_reply(focus).map(|r| r.focus)
+    let focus = connection.get_input_focus().await?;
+    connection.wait_for_reply(focus).await.map(|r| r.focus)
     //connection.ungrab_server_checked()?
 }
 
-fn get_active_screen_geom<D: Display>(connection: &mut D) -> breadx::Result<Geometry> {
-    let focus = get_focused_window(connection)?;
+async fn get_active_screen_geom<D: AsyncDisplay>(connection: &mut D) -> breadx::Result<Geometry> {
+    let focus = get_focused_window(connection).await?;
     let resources = {
         let request = protocol::randr::GetScreenResourcesRequest { window: focus };
-        let cookie = connection.send_reply_request(request)?;
-        connection.wait_for_reply(cookie)?
+        let cookie = connection.send_reply_request(request).await?;
+        connection.wait_for_reply(cookie).await?
     };
 
-    let geom = connection.get_geometry_immediate(focus)?;
-    let absolute = connection.translate_coordinates_immediate(focus, geom.root, geom.x, geom.y)?;
+    let geom = connection.get_geometry_immediate(focus).await?;
+    let absolute = connection.translate_coordinates_immediate(focus, geom.root, geom.x, geom.y).await?;
 
     // TODO: Perhaps only read until we've found what we're looking for
     let mut crtcs = Vec::new();
@@ -263,8 +268,8 @@ fn get_active_screen_geom<D: Display>(connection: &mut D) -> breadx::Result<Geom
             crtc: crtc.clone(),
             config_timestamp: 0,
         };
-        let cookie = connection.send_reply_request(request)?;
-        let reply = connection.wait_for_reply(cookie)?;
+        let cookie = connection.send_reply_request(request).await?;
+        let reply = connection.wait_for_reply(cookie).await?;
         if !reply.outputs.is_empty() {
             debug!("crtc {:?}", reply);
             crtcs.push(reply);

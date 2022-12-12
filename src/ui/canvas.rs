@@ -1,5 +1,6 @@
 use breadx::{prelude::*, protocol::xproto};
-use breadx_image::{DisplayExt, Image};
+use breadx::display::AsyncDisplayExt;
+use breadx_image::{AsyncDisplayExt as ImageAsyncDisplayExt, Image};
 use rusttype::{point, Font, Scale, VMetrics};
 
 use crate::options::{Color, Options};
@@ -17,14 +18,14 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    pub fn new<D: Display>(
+    pub async fn new<D: AsyncDisplayExt>(
         display: &mut D,
         window: xproto::Window,
         width: u16,
         height: u16,
         options: &Options,
     ) -> Result<Canvas, Box<dyn std::error::Error>> {
-        let depth = display.get_geometry_immediate(window)?.depth;
+        let depth = display.get_geometry_immediate(window).await?.depth;
         let format = xproto::ImageFormat::Z_PIXMAP;
         let len = breadx_image::storage_bytes(width, height, depth, None, format, 1);
         let storage = vec![0u8; len];
@@ -34,18 +35,18 @@ impl Canvas {
         let scale = Scale::uniform(options.font_size as f32);
         let v_metrics = font.v_metrics(scale);
 
-        let pixmap = display.generate_xid()?;
-        let pixmap_gc = display.generate_xid()?;
+        let pixmap = display.generate_xid().await?;
+        let pixmap_gc = display.generate_xid().await?;
 
-        display.create_pixmap_checked(depth, pixmap, window, width, height)?;
+        display.create_pixmap_checked(depth, pixmap, window, width, height).await?;
         display.create_gc_checked(
             pixmap_gc,
             pixmap,
             xproto::CreateGCAux::new()
                 .foreground(display.default_screen().white_pixel)
                 .graphics_exposures(0),
-        )?;
-        display.put_ximage_checked(&image, pixmap, pixmap_gc, 0, 0)?;
+        ).await?;
+        display.put_ximage_checked(&image, pixmap, pixmap_gc, 0, 0).await?;
 
         Ok(Canvas {
             image,
@@ -59,9 +60,9 @@ impl Canvas {
         })
     }
 
-    pub fn draw<D: Display>(&self, display: &mut D) -> Result<(), Box<dyn std::error::Error>> {
-        display.put_ximage_checked(&self.image, self.window, self.gc, 0, 0)?;
-        display.flush()?;
+    pub async fn draw<D: AsyncDisplay>(&self, display: &mut D) -> Result<(), Box<dyn std::error::Error>> {
+        display.put_ximage_checked(&self.image, self.window, self.gc, 0, 0).await?;
+        display.flush().await?;
         Ok(())
     }
 

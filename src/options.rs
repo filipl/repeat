@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct Options {
     pub font_size: f32,
     pub font_name: Option<String>,
