@@ -1,23 +1,15 @@
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
 use std::error::Error;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use breadx::display::DisplayConnection;
 use futures::channel::mpsc::Sender;
 use futures::{future, prelude::*};
-use log::{debug, error};
+use log::debug;
 use tarpc::serde_transport::unix::listen;
 use tarpc::server::Channel;
 use tarpc::tokio_serde::formats::Json;
 use tarpc::{client, context, server};
-use tokio::io::unix::AsyncFd;
 use tokio::sync::Mutex as AsyncMutex;
-
-use crate::db::Database;
-use crate::options::Options;
-use crate::ui::Window;
 
 #[tarpc::service]
 pub trait Manager {
