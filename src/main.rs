@@ -60,40 +60,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let database = Arc::new(db::Database::new());
-    database.add_clip(db::Clip {
-        source: db::Source::Clipboard,
-        contents: db::ClipContents::Text("clipboard".to_owned()),
-    });
-    database.add_clip(db::Clip {
-        source: db::Source::Primary,
-        contents: db::ClipContents::Text("primary".to_owned()),
-    });
-    database.add_clip(db::Clip {
-        source: db::Source::Secondary,
-        contents: db::ClipContents::Text("secondary".to_owned()),
-    });
-    for _ in 1..100 {
-        database.add_clip(db::Clip {
-            source: db::Source::Secondary,
-            contents: db::ClipContents::Text("secondary".to_owned()),
-        });
-    }
-
     let connection = Arc::new(AsyncMutex::new(tokio_support::connect(None).await?));
     let window: Arc<Mutex<Option<Window>>> = Arc::new(Mutex::new(None));
-        //Arc::new(Mutex::new(
-        //    Some(Window::create(&mut *connection.lock().await, database.clone(), &options).await?)));
-
     let mut clipboard = {
         let mut dpy = connection.lock().await;
-        //clipboard::Clipboard::print_owners(&mut *dpy).await?;
-        let c = clipboard::Clipboard::new(&mut *dpy).await?;
-        //let primary = dpy.intern_atom_immediate(true, "PRIMARY").await?;
-        //let clip = dpy.intern_atom_immediate(true, "CLIPBOARD").await?;
-        // TODO: Fetch all selections to begin with
-        //c.get_targets(&mut *dpy, primary.atom).await?;
-        //c.get_targets(&mut *dpy, clip.atom).await?;
-        c
+        clipboard::Clipboard::new(&mut *dpy, database.clone()).await?
     };
 
     let (rpc_sender, mut rpc_receiver) = futures::channel::mpsc::channel::<rpc::Message>(10);

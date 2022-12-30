@@ -1,4 +1,5 @@
-use crate::clipboard::GetState::GetText;
+use crate::clipboard::GetState::{GetTargets, GetText};
+use crate::db::{Clip, ClipContents, Database};
 use breadx::prelude::*;
 use breadx::protocol::xfixes::SelectionEventMask;
 use breadx::protocol::xproto::EventMask;
@@ -6,6 +7,8 @@ use breadx::protocol::{xproto, Event};
 use log::{debug, info, trace, warn};
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::Arc;
+use crate::db;
 
 const SELECTIONS: &'static [&'static str] = &["PRIMARY", "SECONDARY", "CLIPBOARD"];
 const TARGETS: &'static str = "TARGETS";
@@ -15,16 +18,20 @@ pub struct Clipboard {
     setter: xproto::Window,
     get_states: HashMap<xproto::Atom, GetState>,
     atoms: HashMap<String, xproto::Atom>,
+    database: Arc<Database>,
 }
 
 #[derive(Debug)]
 enum GetState {
-    GetTargets { property: xproto::Atom },
+    GetTargets(xproto::Atom),
     GetText(xproto::Atom),
 }
 
 impl Clipboard {
-    pub async fn new<D: AsyncDisplay>(dpy: &mut D) -> Result<Clipboard, Box<dyn Error>> {
+    pub async fn new<D: AsyncDisplay>(
+        dpy: &mut D,
+        database: Arc<Database>,
+    ) -> Result<Clipboard, Box<dyn Error>> {
         // create window
         dpy.xfixes_query_version_immediate(5, 0).await?;
 
@@ -82,6 +89,7 @@ impl Clipboard {
             setter,
             get_states: HashMap::new(),
             atoms: HashMap::new(),
+            database,
         };
         c.fetch_initial(dpy).await?;
         Ok(c)
@@ -136,11 +144,12 @@ impl Clipboard {
         let mut num = 0;
         loop {
             let name = format!("REPEAT_{}", num);
+            let atom = self.get_atom(dpy, &name, false).await?;
             num = num + 1;
-            if self.atoms.contains_key(&name) {
+            if self.get_states.contains_key(&atom) {
                 continue;
             } else {
-                return self.get_atom(dpy, &name, false).await;
+                return Ok(atom);
             }
         }
     }
@@ -195,7 +204,7 @@ impl Clipboard {
         let targets = self.get_atom(dpy, TARGETS, true).await?;
         let property = self.get_selection_property(dpy, selection, targets).await?;
         self.get_states
-            .insert(property, GetState::GetTargets { property });
+            .insert(property, GetTargets(property));
         Ok(())
     }
 
@@ -213,7 +222,7 @@ impl Clipboard {
                     None => {
                         warn!("some other unhandled property changed: {}", sn.property);
                     }
-                    Some(&GetState::GetTargets { property }) => {
+                    Some(&GetTargets(property)) => {
                         debug!("got targets for {}", property);
                         let targets = dpy
                             .get_property_immediate(false, self.getter, property, 0, 0, u32::MAX)
@@ -259,6 +268,8 @@ impl Clipboard {
                             .await?;
                         let value = String::from_utf8_lossy(&value_reply.value).to_string();
                         info!("property {} value ({}): {:?}", property, value.len(), value);
+                        let contents = ClipContents::Text(value);
+                        self.database.add_clip(Clip { source: db::Source::Primary, contents });
                         self.get_states.remove(&property);
                     }
                 }
@@ -269,8 +280,8 @@ impl Clipboard {
                         let target_reply = dpy
                             .get_property_immediate(false, pn.window, pn.atom, 0, 0, u32::MAX)
                             .await?;
-                        debug!(
-                            "property notify (atom:{}) value: {:?}",
+                        trace!(
+                            "new property notify (atom:{}) value: {:?}",
                             pn.atom, target_reply.value
                         );
                     }

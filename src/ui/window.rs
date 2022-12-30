@@ -117,7 +117,7 @@ impl Window {
         self.canvas.clear();
         self.canvas.draw_text(&self.input, Color::red(), 0);
         let max_rows = self.canvas.text_rows();
-        for (i, clip) in self.database.clips().iter().enumerate() {
+        for (i, clip) in self.database.clips().iter().rev().enumerate() {
             if i > max_rows {
                 break;
             }
