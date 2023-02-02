@@ -10,6 +10,7 @@ use breadx::protocol::{self, xproto::EventMask, Event};
 use breadx::{prelude::*, protocol::xproto};
 use breadx_keysyms::{keysyms, KeyboardState};
 use log::{debug, error};
+use crate::ui::window::WindowAction::{JustClose, StayOpen, TakeOwnership};
 
 pub struct Window {
     keyboard_state: KeyboardState,
@@ -25,6 +26,12 @@ pub struct Window {
 struct Modes {
     shift: bool,
     ctrl: bool,
+}
+
+pub enum WindowAction {
+    TakeOwnership,
+    JustClose,
+    StayOpen,
 }
 
 impl Window {
@@ -134,7 +141,7 @@ impl Window {
         &mut self,
         display: &mut D,
         event: &Event,
-    ) -> Result<bool, Box<dyn Error>> {
+    ) -> Result<WindowAction, Box<dyn Error>> {
         match event {
             Event::KeyPress(kp) => {
                 let sym = self.keyboard_state.symbol_async(display, kp.detail, 0).await?;
@@ -142,7 +149,7 @@ impl Window {
                     keysyms::KEY_Escape => {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
-                        return Ok(false);
+                        return Ok(JustClose);
                     }
                     keysyms::KEY_BackSpace => {
                         self.input.pop();
@@ -153,7 +160,7 @@ impl Window {
                         focus_window(display, self.focused_window).await?;
                         // Send Shift + Insert
                         send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
-                        return Ok(false);
+                        return Ok(TakeOwnership);
                     }
                     key => {
                         if let Some(char) = char::from_u32(key) {
@@ -175,7 +182,7 @@ impl Window {
             }
             _ => {}
         }
-        Ok(true)
+        Ok(StayOpen)
     }
 }
 

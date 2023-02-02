@@ -24,6 +24,7 @@ struct Server {
 #[derive(Debug)]
 pub enum Message {
     Show,
+    Own,
 }
 
 #[tarpc::server]
@@ -33,9 +34,7 @@ impl Manager for Server {
 
         {
             debug!("showing window");
-
             let _ = self.sender.lock().await.send(Message::Show).await;
-
             debug!("showed window");
         }
     }

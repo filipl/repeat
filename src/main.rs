@@ -7,8 +7,8 @@ mod rpc;
 mod ui;
 
 use log::{debug, error, info, trace};
-use std::sync::{Arc, Mutex};
 use std::env;
+use std::sync::{Arc, Mutex};
 use x11_clipboard::Clipboard;
 
 use crate::ui::Window;
@@ -84,11 +84,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let keep_open = match locked_window.as_mut() {
                     Some(w) => {
                         let mut c = connection.lock().await;
-                        let keep = w.handle_event(&mut *c, &event).await?;
-                        if !keep {
-                            w.destroy(&mut *c).await?;
+                        match w.handle_event(&mut *c, &event).await? {
+                            ui::WindowAction::TakeOwnership => {
+                                clipboard.take_ownership(&mut *c).await?;
+                                false
+                            }
+                            ui::WindowAction::JustClose => false,
+                            ui::WindowAction::StayOpen => true,
                         }
-                        keep
                     },
                     _ => true,
                 };
@@ -109,6 +112,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             command = rpc_receiver.next() => {
                 trace!("got a command {:?}", command);
                 match command {
+                    Some(rpc::Message::Own) => {
+                        clipboard.take_ownership(&mut *connection.lock().await).await?;
+                    }
                     Some(rpc::Message::Show) => {
                         info!("showing window");
                         let mut locked_window = window.lock().unwrap();

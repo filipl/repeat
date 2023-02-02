@@ -1,14 +1,16 @@
+use std::borrow::Cow;
 use crate::clipboard::GetState::{GetTargets, GetText};
+use crate::db;
 use crate::db::{Clip, ClipContents, Database};
 use breadx::prelude::*;
 use breadx::protocol::xfixes::SelectionEventMask;
-use breadx::protocol::xproto::EventMask;
+use breadx::protocol::xproto::{AtomEnum, EventMask};
 use breadx::protocol::{xproto, Event};
 use log::{debug, info, trace, warn};
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::Read;
 use std::sync::Arc;
-use crate::db;
 
 const SELECTIONS: &'static [&'static str] = &["PRIMARY", "SECONDARY", "CLIPBOARD"];
 const TARGETS: &'static str = "TARGETS";
@@ -25,6 +27,17 @@ pub struct Clipboard {
 enum GetState {
     GetTargets(xproto::Atom),
     GetText(xproto::Atom),
+}
+
+// Note: To get around Void not being implemented for &[u8]
+struct WrappedU8 {
+    data: Vec<u8>
+}
+
+impl breadx::Void for WrappedU8 {
+    fn bytes(&self) -> &[u8] {
+        &self.data
+    }
 }
 
 impl Clipboard {
@@ -203,8 +216,14 @@ impl Clipboard {
     ) -> Result<(), Box<dyn Error>> {
         let targets = self.get_atom(dpy, TARGETS, true).await?;
         let property = self.get_selection_property(dpy, selection, targets).await?;
-        self.get_states
-            .insert(property, GetTargets(property));
+        self.get_states.insert(property, GetTargets(property));
+        Ok(())
+    }
+
+    pub async fn take_ownership<D: AsyncDisplay>(&mut self, dpy: &mut D) -> Result<(), Box<dyn Error>> {
+        info!("taking ownership");
+        let primary = self.get_atom(dpy, "PRIMARY", true).await?;
+        dpy.set_selection_owner_checked(self.setter, primary, 0).await?;
         Ok(())
     }
 
@@ -214,8 +233,100 @@ impl Clipboard {
         event: &Event,
     ) -> Result<(), Box<dyn Error>> {
         match event {
+            Event::SelectionRequest(sr) => {
+                let targets_atom = self.get_atom(dpy, TARGETS, true).await?;
+                let string_atom = self.get_atom(dpy, "UTF8_STRING", false).await?;
+                if sr.target == targets_atom {
+                    // it wants to know what we serve
+                    match self.database.selection() {
+                        None => {
+                            debug!("requested - but nothing available");
+                            // we serve nothing
+                            let d = WrappedU8 { data: Vec::new() };
+                            dpy.change_property_checked(
+                                xproto::PropMode::REPLACE,
+                                sr.requestor,
+                                0,
+                                xproto::Atom::from(AtomEnum::ATOM),
+                                0,
+                                0,
+                                &d,
+                            )
+                            .await?;
+                        }
+                        Some(clip) => {
+                            let property = match clip.contents {
+                                ClipContents::Text(_) => {
+                                    string_atom
+                                }
+                            };
+                            debug!("requested - sending targets");
+                            // TODO: Decide what properties to actually have / clip
+                            let data: &[u32] = &[targets_atom, property];
+                            let mut data_u8: Vec<u8> = Vec::with_capacity(data.len() * 4);
+                            for item in data {
+                                data_u8.extend(&item.to_le_bytes());
+                            }
+                            debug!("sending data: {:?}", data_u8);
+                            let d = WrappedU8 { data: data_u8 };
+                            dpy.change_property_checked(
+                                xproto::PropMode::REPLACE,
+                                sr.requestor,
+                                sr.property,
+                                xproto::Atom::from(AtomEnum::ATOM),
+                                32,
+                                data.len().try_into().expect("too many elements"),
+                                &d
+                            )
+                            .await?;
+                        }
+                    }
+                } else if sr.target == string_atom {
+                    let str = match self.database.selection() {
+                        None => {
+                            "n/a".to_owned()
+                        }
+                        Some(clip) => {
+                            match clip.contents {
+                                ClipContents::Text(txt) => txt
+                            }
+                        }
+                    };
+                    let d = WrappedU8 { data: Vec::from(str) };
+                    dpy.change_property_checked(
+                        xproto::PropMode::REPLACE,
+                        sr.requestor,
+                        sr.property,
+                        string_atom,
+                        8,
+                        d.data.len() as u32,
+                        &d
+                    ).await?;
+                }
+                let notify_event = xproto::SelectionNotifyEvent {
+                    response_type: xproto::SELECTION_NOTIFY_EVENT,
+                    sequence: 0,
+                    time: 0,
+                    requestor: sr.requestor,
+                    selection: sr.selection,
+                    target: sr.target,
+                    property: sr.property,
+                };
+                let event = xproto::SendEventRequest {
+                    propagate: false,
+                    destination: sr.requestor,
+                    event_mask: 0,
+                    event: Cow::Owned(notify_event.into()),
+                };
+                info!("sent notification: {:?}", notify_event);
+                let cookie = dpy.send_void_request(event, false).await?;
+
+                //dpy.send_event_checked(false, sr.requestor, EventMask::default(), notify_event).await?;
+            }
             Event::XfixesSelectionNotify(sn) => {
-                self.get_targets(dpy, sn.selection).await?;
+                if sn.owner != self.setter {
+                    self.get_targets(dpy, sn.selection).await?;
+                }
             }
             Event::SelectionNotify(sn) => {
                 match self.get_states.get(&sn.property) {
@@ -269,7 +380,10 @@ impl Clipboard {
                         let value = String::from_utf8_lossy(&value_reply.value).to_string();
                         info!("property {} value ({}): {:?}", property, value.len(), value);
                         let contents = ClipContents::Text(value);
-                        self.database.add_clip(Clip { source: db::Source::Primary, contents });
+                        self.database.add_clip(Clip {
+                            source: db::Source::Primary,
+                            contents,
+                        });
                         self.get_states.remove(&property);
                     }
                 }
@@ -282,7 +396,8 @@ impl Clipboard {
                             .await?;
                         trace!(
                             "new property notify (atom:{}) value: {:?}",
-                            pn.atom, target_reply.value
+                            pn.atom,
+                            target_reply.value
                         );
                     }
                 }

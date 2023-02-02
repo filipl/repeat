@@ -12,4 +12,5 @@ pub trait Widget {
 }
 
 pub use window::Window;
+pub use window::WindowAction;
 pub use canvas::Canvas;
