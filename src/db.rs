@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use guardian::ArcMutexGuardian;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use fuzzy_matcher::clangd::fuzzy_match;
 
 const MAX_CLIPS: usize = 100;
 
@@ -10,7 +11,6 @@ pub struct Database {
     selection: Arc<Mutex<Option<Clip>>>,
     start_idx: AtomicUsize,
 }
-// Searching (fuzzy)
 
 impl Database {
     pub fn new() -> Database {
@@ -60,6 +60,24 @@ impl Database {
             }
         }
     }
+
+    pub fn search(&self, pattern: &str, max: usize) -> Vec<Clip> {
+        let clips = self.clips.lock().unwrap();
+        let mut matched_clips: Vec<(usize, i64)> = clips.iter().enumerate().filter_map(|(idx, clip)| {
+            match &clip.contents {
+                ClipContents::Text(content) => {
+                    match fuzzy_match(content, pattern) {
+                        None => { None }
+                        Some(score) => { Some((idx, score)) }
+                    }
+                }
+            }
+        }).collect();
+        matched_clips.sort_by_key(|(_, score)| { score.clone() });
+        matched_clips.iter().take(max)
+            .flat_map(|(idx, _)| { clips.get(*idx).cloned() })
+            .collect()
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -86,7 +104,7 @@ mod tests {
 
     #[test]
     fn creating() {
-        let db = Database::new();
+        Database::new();
     }
 
     #[test]
@@ -123,12 +141,10 @@ mod tests {
     #[test]
     fn rolling() {
         let db = Database::new();
-        let mut last_idx = 0;
-
-        for i in 1..(MAX_CLIPS * 2) {
+        for i in 1..(MAX_CLIPS * 3) {
             let clip = Clip { source: Source::Primary, contents: ClipContents::Text(format!("clip {}", i)) };
-            last_idx = db.add_clip(clip.clone());
-            assert_eq!(db.at(last_idx).unwrap(), clip);
+            let idx = db.add_clip(clip.clone());
+            assert_eq!(db.at(idx).unwrap(), clip);
         }
 
         assert!(db.at(0).is_none());
@@ -150,5 +166,27 @@ mod tests {
         }
 
         assert_eq!(db.selection().unwrap(), fst);
+    }
+
+    #[test]
+    fn search() {
+        let db = Database::new();
+
+        let fst = Clip { source: Source::Primary, contents: ClipContents::Text("fst string".to_owned()) };
+        db.add_clip(fst.clone());
+        let snd = Clip { source: Source::Secondary, contents: ClipContents::Text("second string".to_owned()) };
+        db.add_clip(snd.clone());
+
+        {
+            let matches = db.search("fst", 5);
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches.first().unwrap().clone(), fst);
+        }
+
+        {
+            let matches = db.search("string", 5);
+            assert_eq!(matches.len(), 2);
+            assert_eq!(matches.first().unwrap().clone(), fst);
+        }
     }
 }

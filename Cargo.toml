@@ -16,3 +16,4 @@ log = "0.4"
 tarpc = { version = "0.31", features = ["serde-transport", "serde-transport-json", "unix"] }
 tokio = { version = "1.22", features = ["full"] }
 futures = "0.3"
+fuzzy-matcher = "0.3"
