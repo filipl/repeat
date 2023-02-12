@@ -85,7 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Some(w) => {
                         let mut c = connection.lock().await;
                         match w.handle_event(&mut *c, &event).await? {
-                            ui::WindowAction::TakeOwnership => {
+                            ui::WindowAction::TakeOwnership(clip) => {
+                                database.select_clip(clip);
                                 clipboard.take_ownership(&mut *c).await?;
                                 false
                             }

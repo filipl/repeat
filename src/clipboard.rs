@@ -9,7 +9,6 @@ use breadx::protocol::{xproto, Event};
 use log::{debug, info, trace, warn};
 use std::collections::HashMap;
 use std::error::Error;
-use std::io::Read;
 use std::sync::Arc;
 
 const SELECTIONS: &'static [&'static str] = &["PRIMARY", "SECONDARY", "CLIPBOARD"];
@@ -319,7 +318,7 @@ impl Clipboard {
                     event: Cow::Owned(notify_event.into()),
                 };
                 info!("sent notification: {:?}", notify_event);
-                let cookie = dpy.send_void_request(event, false).await?;
+                dpy.send_void_request(event, false).await?;
 
                 //dpy.send_event_checked(false, sr.requestor, EventMask::default(), notify_event).await?;
             }

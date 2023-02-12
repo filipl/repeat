@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::error::Error;
 use std::sync::Arc;
 
-use crate::db::{ClipContents, Database};
+use crate::db::{Clip, ClipContents, Database};
 use crate::options::{Color, Options};
 use crate::ui;
 use breadx::protocol::xproto::{ModMask, SendEventRequest};
@@ -21,6 +21,8 @@ pub struct Window {
     canvas: ui::canvas::Canvas,
     input: String,
     modes: Modes,
+    searches: Vec<Clip>,
+    current_choice: usize,
 }
 
 struct Modes {
@@ -29,7 +31,7 @@ struct Modes {
 }
 
 pub enum WindowAction {
-    TakeOwnership,
+    TakeOwnership(Clip),
     JustClose,
     StayOpen,
 }
@@ -87,6 +89,8 @@ impl Window {
                 shift: false,
                 ctrl: false,
             },
+            searches: Vec::new(),
+            current_choice: 0,
         };
 
         w.redraw();
@@ -107,6 +111,7 @@ impl Window {
     pub async fn show<D: AsyncDisplay>(&mut self, display: &mut D) -> breadx::Result<()> {
         let focused_window = get_focused_window(display).await?;
         self.focused_window = focused_window;
+        self.research();
 
         display.map_window_checked(self.window).await?;
         let cookie = display.send_void_request(
@@ -117,14 +122,20 @@ impl Window {
             },
             true,
         ).await?;
+        self.redraw();
         display.wait_for_reply(cookie).await
+    }
+
+    fn research(&mut self) {
+        self.current_choice = 0;
+        self.searches = self.database.search(&self.input, 5);
     }
 
     fn redraw(&mut self) {
         self.canvas.clear();
         self.canvas.draw_text(&self.input, Color::red(), 0);
         let max_rows = self.canvas.text_rows();
-        for (i, clip) in self.database.clips().iter().rev().enumerate() {
+        for (i, clip) in self.searches.iter().enumerate() {
             if i > max_rows {
                 break;
             }
@@ -153,18 +164,28 @@ impl Window {
                     }
                     keysyms::KEY_BackSpace => {
                         self.input.pop();
+                        self.research();
                         true
                     }
                     keysyms::KEY_Return => {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
-                        // Send Shift + Insert
-                        send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
-                        return Ok(TakeOwnership);
+                        if !self.searches.is_empty() {
+                            // Send Shift + Insert
+                            send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
+                            let choice = match self.searches.get(self.current_choice) {
+                                None => JustClose,
+                                Some(clip) => TakeOwnership(clip.clone()),
+                            };
+                            return Ok(choice)
+                        } else {
+                            return Ok(JustClose)
+                        }
                     }
                     key => {
                         if let Some(char) = char::from_u32(key) {
                             self.input.push(char);
+                            self.research();
                         }
                         true
                     }

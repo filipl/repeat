@@ -51,6 +51,10 @@ impl Database {
         self.selection.lock().unwrap().clone()
     }
 
+    pub fn select_clip(&self, clip: Clip) {
+        *self.selection.lock().unwrap() = Some(clip)
+    }
+
     pub fn select(&self, idx: usize) -> bool {
         match self.at(idx) {
             None => false,
