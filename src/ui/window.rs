@@ -139,8 +139,8 @@ impl Window {
             if i > max_rows {
                 break;
             }
-            match &clip.contents {
-                ClipContents::Text(text) => {
+            match &clip.contents.as_ref() {
+                &ClipContents::Text(text) => {
                     let prefix = if self.current_choice == i { "*" } else { "" };
                     self.canvas
                         .draw_text(&format!("{}{} {}", prefix, i, text), Color::white(), i as u16 + 1);

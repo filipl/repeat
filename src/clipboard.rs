@@ -254,8 +254,8 @@ impl Clipboard {
                             .await?;
                         }
                         Some(clip) => {
-                            let property = match clip.contents {
-                                ClipContents::Text(_) => {
+                            let property = match &clip.contents.as_ref() {
+                                &ClipContents::Text(_) => {
                                     string_atom
                                 }
                             };
@@ -286,8 +286,8 @@ impl Clipboard {
                             "n/a".to_owned()
                         }
                         Some(clip) => {
-                            match clip.contents {
-                                ClipContents::Text(txt) => txt
+                            match clip.contents.as_ref() {
+                                ClipContents::Text(txt) => txt.to_owned()
                             }
                         }
                     };
@@ -379,10 +379,10 @@ impl Clipboard {
                         let value = String::from_utf8_lossy(&value_reply.value).to_string();
                         info!("property {} value ({}): {:?}", property, value.len(), value);
                         let contents = ClipContents::Text(value);
-                        self.database.add_clip(Clip {
-                            source: db::Source::Primary,
+                        self.database.add_clip(Clip::new(
+                            db::Source::Primary,
                             contents,
-                        });
+                        ));
                         self.get_states.remove(&property);
                     }
                 }

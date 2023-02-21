@@ -68,7 +68,7 @@ impl Database {
     pub fn search(&self, pattern: &str, max: usize) -> Vec<Clip> {
         let clips = self.clips.lock().unwrap();
         let mut matched_clips: Vec<(usize, i64)> = clips.iter().enumerate().filter_map(|(idx, clip)| {
-            match &clip.contents {
+            match &clip.contents.as_ref() {
                 ClipContents::Text(content) => {
                     match fuzzy_match(content, pattern) {
                         None => { None }
@@ -87,7 +87,13 @@ impl Database {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Clip {
     pub source: Source,
-    pub contents: ClipContents,
+    pub contents: Arc<ClipContents>,
+}
+
+impl Clip {
+    pub fn new(source: Source, contents: ClipContents) -> Clip {
+        Clip { source, contents: Arc::new(contents) }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -114,8 +120,8 @@ mod tests {
     #[test]
     fn add_and_get() {
         let db = Database::new();
-        let fst = Clip { source: Source::Primary, contents: ClipContents::Text("fst string".to_owned()) };
-        let snd = Clip { source: Source::Secondary, contents: ClipContents::Text("second string".to_owned()) };
+        let fst = Clip::new(Source::Primary,ClipContents::Text("fst string".to_owned()));
+        let snd = Clip::new(Source::Secondary, ClipContents::Text("second string".to_owned()));
 
         let fst_idx = db.add_clip(fst.clone());
         assert_eq!(fst_idx, 0);
@@ -131,8 +137,8 @@ mod tests {
     #[test]
     fn select() {
         let db = Database::new();
-        let fst = Clip { source: Source::Primary, contents: ClipContents::Text("fst string".to_owned()) };
-        let snd = Clip { source: Source::Secondary, contents: ClipContents::Text("second string".to_owned()) };
+        let fst = Clip::new(Source::Primary, ClipContents::Text("fst string".to_owned()));
+        let snd = Clip::new(Source::Secondary, ClipContents::Text("second string".to_owned()));
 
         let fst_idx = db.add_clip(fst.clone());
         db.add_clip(snd.clone());
@@ -146,7 +152,7 @@ mod tests {
     fn rolling() {
         let db = Database::new();
         for i in 1..(MAX_CLIPS * 3) {
-            let clip = Clip { source: Source::Primary, contents: ClipContents::Text(format!("clip {}", i)) };
+            let clip = Clip::new(Source::Primary, ClipContents::Text(format!("clip {}", i)));
             let idx = db.add_clip(clip.clone());
             assert_eq!(db.at(idx).unwrap(), clip);
         }
@@ -159,12 +165,12 @@ mod tests {
     fn selection_stays_after_roll() {
         let db = Database::new();
 
-        let fst = Clip { source: Source::Primary, contents: ClipContents::Text("fst string".to_owned()) };
+        let fst = Clip::new(Source::Primary, ClipContents::Text("fst string".to_owned()));
         let fst_idx = db.add_clip(fst.clone());
         assert!(db.select(fst_idx));
 
         for i in 1..(MAX_CLIPS * 2) {
-            let clip = Clip { source: Source::Primary, contents: ClipContents::Text(format!("clip {}", i)) };
+            let clip = Clip::new(Source::Primary, ClipContents::Text(format!("clip {}", i)));
             let idx = db.add_clip(clip.clone());
             assert_eq!(db.at(idx).unwrap(), clip);
         }
@@ -176,9 +182,9 @@ mod tests {
     fn search() {
         let db = Database::new();
 
-        let fst = Clip { source: Source::Primary, contents: ClipContents::Text("fst string".to_owned()) };
+        let fst = Clip::new(Source::Primary, ClipContents::Text("fst string".to_owned()));
         db.add_clip(fst.clone());
-        let snd = Clip { source: Source::Secondary, contents: ClipContents::Text("second string".to_owned()) };
+        let snd = Clip::new(Source::Secondary, ClipContents::Text("second string".to_owned()));
         db.add_clip(snd.clone());
 
         {
