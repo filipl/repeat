@@ -128,7 +128,7 @@ impl Window {
 
     fn research(&mut self) {
         self.current_choice = 0;
-        self.searches = self.database.search(&self.input, 5);
+        self.searches = self.database.search(&self.input, 100);
     }
 
     fn redraw(&mut self) {
@@ -141,8 +141,9 @@ impl Window {
             }
             match &clip.contents {
                 ClipContents::Text(text) => {
+                    let prefix = if self.current_choice == i { "*" } else { "" };
                     self.canvas
-                        .draw_text(&format!("{} {}", i, text), Color::white(), i as u16 + 1);
+                        .draw_text(&format!("{}{} {}", prefix, i, text), Color::white(), i as u16 + 1);
                 }
             }
         }
@@ -161,6 +162,20 @@ impl Window {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
                         return Ok(JustClose);
+                    }
+                    keysyms::KEY_Up => {
+                        if self.current_choice > 0 {
+                            self.current_choice -= 1;
+                            self.redraw();
+                        }
+                        true
+                    }
+                    keysyms::KEY_Down => {
+                        if self.current_choice < self.searches.len() {
+                            self.current_choice += 1;
+                            self.redraw();
+                        }
+                        true
                     }
                     keysyms::KEY_BackSpace => {
                         self.input.pop();
