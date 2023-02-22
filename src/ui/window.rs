@@ -128,7 +128,11 @@ impl Window {
 
     fn research(&mut self) {
         self.current_choice = 0;
-        self.searches = self.database.search(&self.input, 100);
+        if self.input.is_empty() {
+            self.searches = self.database.clips().iter().take(100).map(|c| c.clone()).collect();
+        } else {
+            self.searches = self.database.search(&self.input, 100);
+        }
     }
 
     fn redraw(&mut self) {
@@ -185,16 +189,16 @@ impl Window {
                     keysyms::KEY_Return => {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
-                        if !self.searches.is_empty() {
+                        return if !self.searches.is_empty() {
                             // Send Shift + Insert
                             send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
                             let choice = match self.searches.get(self.current_choice) {
                                 None => JustClose,
                                 Some(clip) => TakeOwnership(clip.clone()),
                             };
-                            return Ok(choice)
+                            Ok(choice)
                         } else {
-                            return Ok(JustClose)
+                            Ok(JustClose)
                         }
                     }
                     key => {
