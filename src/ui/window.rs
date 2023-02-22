@@ -145,9 +145,9 @@ impl Window {
             }
             match &clip.contents.as_ref() {
                 &ClipContents::Text(text) => {
-                    let prefix = if self.current_choice == i { "*" } else { "" };
+                    let color = if self.current_choice == i { Color::green() } else { Color::white() };
                     self.canvas
-                        .draw_text(&format!("{}{} {}", prefix, i, text), Color::white(), i as u16 + 1);
+                        .draw_text(&format!("{} {}", i, text), color, i as u16 + 1);
                 }
             }
         }

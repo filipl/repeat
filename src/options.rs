@@ -27,6 +27,14 @@ impl Color {
             blue: 255f32,
         }
     }
+
+    pub fn green() -> Color {
+        Color {
+            red: 0f32,
+            green: 255f32,
+            blue: 0f32,
+        }
+    }
 }
 
 pub struct Theme {
