@@ -23,6 +23,14 @@ impl Database {
 
     pub fn add_clip(&self, clip: Clip) -> usize {
         let mut clips = self.clips.lock().unwrap();
+        // see if it's a greater version of the previous clip
+        let replace = match clips.back() {
+            None => false,
+            Some(latest_clip) => clip.contains(latest_clip),
+        };
+        if replace {
+            clips.pop_back();
+        }
         clips.push_back(clip);
         if clips.len() > MAX_CLIPS {
             clips.pop_front();
@@ -94,11 +102,29 @@ impl Clip {
     pub fn new(source: Source, contents: ClipContents) -> Clip {
         Clip { source, contents: Arc::new(contents) }
     }
+
+    pub fn contains(&self, other: &Clip) -> bool {
+        self.contents.contains(&other.contents)
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum ClipContents {
     Text(String),
+}
+
+impl ClipContents {
+    pub fn contains(&self, other: &ClipContents) -> bool {
+        match self {
+            ClipContents::Text(my_str) => {
+                match other {
+                    ClipContents::Text(their_str) => {
+                        my_str.contains(their_str)
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -198,5 +224,23 @@ mod tests {
             assert_eq!(matches.len(), 2);
             assert_eq!(matches.first().unwrap().clone(), fst);
         }
+    }
+
+    #[test]
+    fn replace_smaller_text() {
+        fn clip(s: &str) -> Clip {
+            Clip::new(Source::Primary, ClipContents::Text(s.to_owned()))
+        }
+
+        let small = clip("fst");
+        let bigger_after = clip("fst after");
+        let bigger_before = clip("before fst");
+        let bigger_around = clip("before fst after");
+        let smaller = clip("s");
+
+        assert_eq!(bigger_after.contains(&small), true);
+        assert_eq!(bigger_before.contains(&small), true);
+        assert_eq!(bigger_around.contains(&small), true);
+        assert_eq!(smaller.contains(&small), false);
     }
 }
