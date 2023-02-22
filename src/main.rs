@@ -50,7 +50,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("args: {:?}", args);
     if args.len() > 1 {
         let client = rpc::create_client("/tmp/repeat.socket").await?;
-        client.show(tarpc::context::current()).await?;
+        match args.get(1).map(|c| c.as_ref()) {
+            Some("show") => client.show(tarpc::context::current()).await?,
+            Some("pause") => client.pause(tarpc::context::current()).await?,
+            Some("start") => client.start(tarpc::context::current()).await?,
+            _ => {
+                error!("not a valid argument");
+            }
+        }
         return Ok(());
     }
 
@@ -122,6 +129,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if locked_window.is_none() {
                             *locked_window = Some(Window::create(&mut *connection.lock().await, database.clone(), &options).await?);
                         };
+                    }
+                    Some(rpc::Message::Pause) => {
+                        clipboard.pause();
+                    }
+                    Some(rpc::Message::Start) => {
+                        clipboard.start();
                     }
                     None => {
                         error!("rpc server shut down?");

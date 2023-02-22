@@ -20,6 +20,7 @@ pub struct Clipboard {
     get_states: HashMap<xproto::Atom, GetState>,
     atoms: HashMap<String, xproto::Atom>,
     database: Arc<Database>,
+    running: bool,
 }
 
 #[derive(Debug)]
@@ -102,6 +103,7 @@ impl Clipboard {
             get_states: HashMap::new(),
             atoms: HashMap::new(),
             database,
+            running: true,
         };
         c.fetch_initial(dpy).await?;
         Ok(c)
@@ -206,6 +208,16 @@ impl Clipboard {
         )
         .await?;
         Ok(property)
+    }
+
+    pub fn pause(&mut self) {
+        debug!("pausing capture");
+        self.running = false;
+    }
+
+    pub fn start(&mut self) {
+        debug!("starting to capture");
+        self.running = true;
     }
 
     async fn get_targets<D: AsyncDisplay>(
@@ -373,17 +385,21 @@ impl Clipboard {
                         }
                     }
                     Some(&GetText(property)) => {
-                        let value_reply = dpy
-                            .get_property_immediate(true, sn.requestor, sn.property, 0, 0, u32::MAX)
-                            .await?;
-                        let value = String::from_utf8_lossy(&value_reply.value).to_string();
-                        info!("property {} value ({}): {:?}", property, value.len(), value);
-                        let contents = ClipContents::Text(value);
-                        self.database.add_clip(Clip::new(
-                            db::Source::Primary,
-                            contents,
-                        ));
-                        self.get_states.remove(&property);
+                        if self.running {
+                            let value_reply = dpy
+                                .get_property_immediate(true, sn.requestor, sn.property, 0, 0, u32::MAX)
+                                .await?;
+                            let value = String::from_utf8_lossy(&value_reply.value).to_string();
+                            info!("property {} value ({}): {:?}", property, value.len(), value);
+                            let contents = ClipContents::Text(value);
+                            self.database.add_clip(Clip::new(
+                                db::Source::Primary,
+                                contents,
+                            ));
+                            self.get_states.remove(&property);
+                        } else {
+                            debug!("got a potential clip - but we're paused so ignoring.");
+                        }
                     }
                 }
             }

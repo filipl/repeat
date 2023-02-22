@@ -14,6 +14,8 @@ use tokio::sync::Mutex as AsyncMutex;
 #[tarpc::service]
 pub trait Manager {
     async fn show();
+    async fn pause();
+    async fn start();
 }
 
 #[derive(Clone)]
@@ -25,18 +27,24 @@ struct Server {
 pub enum Message {
     Show,
     Own,
+    Pause,
+    Start,
 }
 
 #[tarpc::server]
 impl Manager for Server {
     async fn show(self, _: context::Context) {
-        debug!("trying to show window");
+        debug!("showing window");
+        let _ = self.sender.lock().await.send(Message::Show).await;
+        debug!("showed window");
+    }
 
-        {
-            debug!("showing window");
-            let _ = self.sender.lock().await.send(Message::Show).await;
-            debug!("showed window");
-        }
+    async fn pause(self, _: context::Context) {
+        let _ = self.sender.lock().await.send(Message::Pause).await;
+    }
+
+    async fn start(self, _: context::Context) {
+        let _ = self.sender.lock().await.send(Message::Start).await;
     }
 }
 
