@@ -137,8 +137,9 @@ impl Window {
 
     fn redraw(&mut self) {
         self.canvas.clear();
-        self.canvas.draw_text(&self.input, Color::red(), 0);
+        self.canvas.draw_text(&self.input, &Color::red(), 0);
         let max_rows = self.canvas.text_rows();
+        let mut row_offset = 1;
         for (i, clip) in self.searches.iter().enumerate() {
             if i > max_rows {
                 break;
@@ -146,8 +147,11 @@ impl Window {
             match &clip.contents.as_ref() {
                 &ClipContents::Text(text) => {
                     let color = if self.current_choice == i { Color::green() } else { Color::white() };
-                    self.canvas
-                        .draw_text(&format!("{} {}", i, text), color, i as u16 + 1);
+                    for row in text.lines() {
+                        self.canvas
+                            .draw_text(&format!("{} {}", i, row), &color, row_offset as u16);
+                        row_offset += 1;
+                    }
                 }
             }
         }

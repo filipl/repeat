@@ -73,7 +73,7 @@ impl Canvas {
         }
     }
 
-    pub fn draw_text(&mut self, input: &str, color: Color, row: u16) {
+    pub fn draw_text(&mut self, input: &str, color: &Color, row: u16) {
         self.render_glyphs(0, input, color, row);
     }
 
@@ -85,7 +85,7 @@ impl Canvas {
         self.height as usize / self.text_height() as usize
     }
 
-    fn render_glyphs(&mut self, offset: u16, text: &str, color: Color, row: u16) {
+    fn render_glyphs(&mut self, offset: u16, text: &str, color: &Color, row: u16) {
         let glyphs = self
             .font
             .layout(
