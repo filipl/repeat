@@ -321,7 +321,7 @@ impl Clipboard {
                 let notify_event = xproto::SelectionNotifyEvent {
                     response_type: xproto::SELECTION_NOTIFY_EVENT,
                     sequence: 0,
-                    time: 0,
+                    time: sr.time,
                     requestor: sr.requestor,
                     selection: sr.selection,
                     target: sr.target,
