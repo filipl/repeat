@@ -9,38 +9,12 @@ mod ui;
 use log::{debug, error, info, trace};
 use std::env;
 use std::sync::{Arc, Mutex};
-use x11_clipboard::Clipboard;
 
 use crate::ui::Window;
 use breadx::prelude::*;
 use breadx::rt_support::tokio_support;
 use futures::StreamExt;
 use tokio::sync::Mutex as AsyncMutex;
-
-fn monitor(primary: bool) {
-    let clipboard = Clipboard::new().unwrap();
-    let mut last = String::new();
-    let what = if primary {
-        clipboard.getter.atoms.primary
-    } else {
-        clipboard.getter.atoms.clipboard
-    };
-
-    loop {
-        if let Ok(curr) = clipboard.load_wait(
-            what,
-            clipboard.getter.atoms.utf8_string,
-            clipboard.getter.atoms.property,
-        ) {
-            let curr = String::from_utf8_lossy(&curr);
-            let curr = curr.trim_matches('\u{0}').trim();
-            if !curr.is_empty() && last != curr {
-                last = curr.to_owned();
-                info!("Contents of primary selection {}: {}", what, last);
-            }
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
