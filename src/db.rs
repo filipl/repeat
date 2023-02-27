@@ -85,8 +85,8 @@ impl Database {
                 }
             }
         }).collect();
-        matched_clips.sort_by_key(|(_, score)| { score.clone() });
-        matched_clips.iter().take(max)
+        matched_clips.sort_by_key(|(_, score)| { *score });
+        matched_clips.iter().rev().take(max)
             .flat_map(|(idx, _)| { clips.get(*idx).cloned() })
             .collect()
     }

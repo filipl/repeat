@@ -129,7 +129,7 @@ impl Window {
     fn research(&mut self) {
         self.current_choice = 0;
         if self.input.is_empty() {
-            self.searches = self.database.clips().iter().take(100).map(|c| c.clone()).collect();
+            self.searches = self.database.clips().iter().rev().take(100).map(|c| c.clone()).collect();
         } else {
             self.searches = self.database.search(&self.input, 100);
         }
