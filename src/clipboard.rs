@@ -234,9 +234,13 @@ impl Clipboard {
     pub async fn take_ownership<D: AsyncDisplay>(&mut self, dpy: &mut D) -> Result<(), Box<dyn Error>> {
         info!("taking ownership");
         let primary = self.get_atom(dpy, "PRIMARY", true).await?;
+        let clipboard = self.get_atom(dpy, "CLIPBOARD", true).await?;
         dpy.set_selection_owner_checked(self.setter, primary, 0).await?;
+        dpy.set_selection_owner_checked(self.setter, clipboard, 0).await?;
         Ok(())
     }
+
+
 
     pub async fn handle_event<D: AsyncDisplay>(
         &mut self,
