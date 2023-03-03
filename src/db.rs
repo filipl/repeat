@@ -21,8 +21,9 @@ impl Database {
         }
     }
 
-    pub fn add_clip(&self, clip: Clip) -> usize {
+    pub fn add_clip(&self, clip: Clip) -> Option<usize> {
         let mut clips = self.clips.lock().unwrap();
+
         // see if it's a greater version of the previous clip
         let replace = match clips.back() {
             None => false,
@@ -31,12 +32,18 @@ impl Database {
         if replace {
             clips.pop_back();
         }
+
+        // see if it's already in the database
+        if clips.iter().find(|c| c.contents.eq(&clip.contents)).is_some() {
+            return None;
+        }
+
         clips.push_back(clip);
         if clips.len() > MAX_CLIPS {
             clips.pop_front();
             self.start_idx.fetch_add(1, Ordering::Acquire);
         }
-        clips.len() + (self.start_idx.load(Ordering::Acquire)) - 1
+        Some(clips.len() + (self.start_idx.load(Ordering::Acquire)) - 1)
     }
 
     pub fn clips(&self) -> ArcMutexGuardian<VecDeque<Clip>> {
@@ -106,6 +113,10 @@ impl Clip {
     pub fn contains(&self, other: &Clip) -> bool {
         self.contents.contains(&other.contents)
     }
+
+    pub fn equal(&self, other: &Clip) -> bool {
+        self.contents.equal(&other.contents)
+    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -120,6 +131,18 @@ impl ClipContents {
                 match other {
                     ClipContents::Text(their_str) => {
                         my_str.contains(their_str)
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn equal(&self, other: &ClipContents) -> bool {
+        match self {
+            ClipContents::Text(my_str) => {
+                match other {
+                    ClipContents::Text(their_str) => {
+                        my_str.eq(their_str)
                     }
                 }
             }
@@ -146,13 +169,13 @@ mod tests {
     #[test]
     fn add_and_get() {
         let db = Database::new();
-        let fst = Clip::new(Source::Primary,ClipContents::Text("fst string".to_owned()));
+        let fst = Clip::new(Source::Primary, ClipContents::Text("fst string".to_owned()));
         let snd = Clip::new(Source::Secondary, ClipContents::Text("second string".to_owned()));
 
-        let fst_idx = db.add_clip(fst.clone());
+        let fst_idx = db.add_clip(fst.clone()).unwrap();
         assert_eq!(fst_idx, 0);
 
-        let snd_idx = db.add_clip(snd.clone());
+        let snd_idx = db.add_clip(snd.clone()).unwrap();
         assert_eq!(snd_idx, 1);
 
         assert_eq!(db.at(fst_idx).unwrap(), fst);
@@ -166,7 +189,7 @@ mod tests {
         let fst = Clip::new(Source::Primary, ClipContents::Text("fst string".to_owned()));
         let snd = Clip::new(Source::Secondary, ClipContents::Text("second string".to_owned()));
 
-        let fst_idx = db.add_clip(fst.clone());
+        let fst_idx = db.add_clip(fst.clone()).unwrap();
         db.add_clip(snd.clone());
 
         assert!(db.select(fst_idx));
@@ -179,7 +202,7 @@ mod tests {
         let db = Database::new();
         for i in 1..(MAX_CLIPS * 3) {
             let clip = Clip::new(Source::Primary, ClipContents::Text(format!("clip {}", i)));
-            let idx = db.add_clip(clip.clone());
+            let idx = db.add_clip(clip.clone()).unwrap();
             assert_eq!(db.at(idx).unwrap(), clip);
         }
 
@@ -192,12 +215,12 @@ mod tests {
         let db = Database::new();
 
         let fst = Clip::new(Source::Primary, ClipContents::Text("fst string".to_owned()));
-        let fst_idx = db.add_clip(fst.clone());
+        let fst_idx = db.add_clip(fst.clone()).unwrap();
         assert!(db.select(fst_idx));
 
         for i in 1..(MAX_CLIPS * 2) {
             let clip = Clip::new(Source::Primary, ClipContents::Text(format!("clip {}", i)));
-            let idx = db.add_clip(clip.clone());
+            let idx = db.add_clip(clip.clone()).unwrap();
             assert_eq!(db.at(idx).unwrap(), clip);
         }
 
@@ -222,7 +245,12 @@ mod tests {
         {
             let matches = db.search("string", 5);
             assert_eq!(matches.len(), 2);
-            assert_eq!(matches.first().unwrap().clone(), fst);
+        }
+
+        {
+            let matches = db.search("second", 5);
+            assert_eq!(matches.len(), 1);
+            assert_eq!(matches.first().unwrap().clone(), snd);
         }
     }
 
