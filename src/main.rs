@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let options = options::Options {
         font_size: 20f32,
-        font_name: Some("Arial".to_owned()),
+        font_name: Some("Monospace".to_owned()),
     };
 
     let database = Arc::new(db::Database::new());

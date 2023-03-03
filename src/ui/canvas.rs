@@ -73,8 +73,8 @@ impl Canvas {
         }
     }
 
-    pub fn draw_text(&mut self, input: &str, color: &Color, row: u16) {
-        self.render_glyphs(0, input, color, row);
+    pub fn draw_text(&mut self, input: &str, color: &Color, row: u16, offset: u16) {
+        self.render_glyphs(offset, input, color, row);
     }
 
     pub fn text_height(&self) -> f32 {

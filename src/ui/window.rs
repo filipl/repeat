@@ -137,7 +137,7 @@ impl Window {
 
     fn redraw(&mut self) {
         self.canvas.clear();
-        self.canvas.draw_text(&self.input, &Color::red(), 0);
+        self.canvas.draw_text(&self.input, &Color::red(), 0, 0);
         let max_rows = self.canvas.text_rows();
         let mut row_offset = 1;
         for (i, clip) in self.searches.iter().enumerate() {
@@ -147,10 +147,24 @@ impl Window {
             match &clip.contents.as_ref() {
                 &ClipContents::Text(text) => {
                     let color = if self.current_choice == i { Color::green() } else { Color::white() };
+                    let mut r = 0;
                     for row in text.lines() {
-                        self.canvas
-                            .draw_text(&format!("{} {}", i, row), &color, row_offset as u16);
-                        row_offset += 1;
+                        if r == 5 {
+                            // TODO: Configurable size
+                            let extra_rows = text.lines().count() - 5;
+                            self.canvas.draw_text(&format!(" ... + {} rows", extra_rows), &color, row_offset, 0);
+                            row_offset += 1;
+                            break;
+                        } else {
+                            if r == 0 {
+                                self.canvas.draw_text(&format!("{}", i), &color, row_offset as u16, 0);
+                            }
+                            // TODO: Calculate the size of three numbers and use as offset
+                            self.canvas
+                                .draw_text(row, &color, row_offset as u16, 20);
+                            row_offset += 1;
+                        }
+                        r += 1;
                     }
                 }
             }
@@ -203,7 +217,7 @@ impl Window {
                             Ok(choice)
                         } else {
                             Ok(JustClose)
-                        }
+                        };
                     }
                     key => {
                         if let Some(char) = char::from_u32(key) {
