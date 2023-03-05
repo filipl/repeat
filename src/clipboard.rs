@@ -3,8 +3,8 @@ use crate::clipboard::GetState::{GetTargets, GetText};
 use crate::db;
 use crate::db::{Clip, ClipContents, Database};
 use breadx::prelude::*;
-use breadx::protocol::xfixes::SelectionEventMask;
-use breadx::protocol::xproto::{AtomEnum, EventMask};
+use breadx::protocol::xfixes::{SelectionEventMask};
+use breadx::protocol::xproto::{AtomEnum, EventMask, SelectionRequestEvent, SelectionNotifyEvent};
 use breadx::protocol::{xproto, Event};
 use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
@@ -261,171 +261,188 @@ impl Clipboard {
         Ok(())
     }
 
+    async fn handle_request<D: AsyncDisplay>(
+        &mut self,
+        dpy: &mut D,
+        request: &SelectionRequestEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        let targets_atom = self.get_atom(dpy, TARGETS, true).await?;
+        let string_atom = self.get_atom(dpy, "UTF8_STRING", false).await?;
+        if request.target == targets_atom {
+            // it wants to know what we serve
+            match self.database.selection() {
+                None => {
+                    debug!("requested - but nothing available");
+                    // we serve nothing
+                    let d = WrappedU8 { data: Vec::new() };
+                    dpy.change_property_checked(
+                        xproto::PropMode::REPLACE,
+                        request.requestor,
+                        0,
+                        xproto::Atom::from(AtomEnum::ATOM),
+                        0,
+                        0,
+                        &d,
+                    )
+                        .await?;
+                }
+                Some(clip) => {
+                    let property = match &clip.contents.as_ref() {
+                        &ClipContents::Text(_) => {
+                            string_atom
+                        }
+                    };
+                    debug!("requested - sending targets");
+                    // TODO: Decide what properties to actually have / clip
+                    let data: &[u32] = &[targets_atom, property];
+                    let mut data_u8: Vec<u8> = Vec::with_capacity(data.len() * 4);
+                    for item in data {
+                        data_u8.extend(&item.to_le_bytes());
+                    }
+                    debug!("sending data: {:?}", data_u8);
+                    let d = WrappedU8 { data: data_u8 };
+                    dpy.change_property_checked(
+                        xproto::PropMode::REPLACE,
+                        request.requestor,
+                        request.property,
+                        xproto::Atom::from(AtomEnum::ATOM),
+                        32,
+                        data.len().try_into().expect("too many elements"),
+                        &d,
+                    )
+                        .await?;
+                }
+            }
+        } else if request.target == string_atom {
+            let str = match self.database.selection() {
+                None => {
+                    "n/a".to_owned()
+                }
+                Some(clip) => {
+                    match clip.contents.as_ref() {
+                        ClipContents::Text(txt) => txt.to_owned()
+                    }
+                }
+            };
+            let d = WrappedU8 { data: Vec::from(str) };
+            dpy.change_property_checked(
+                xproto::PropMode::REPLACE,
+                request.requestor,
+                request.property,
+                string_atom,
+                8,
+                d.data.len() as u32,
+                &d,
+            ).await?;
+        }
+        let notify_event = xproto::SelectionNotifyEvent {
+            response_type: xproto::SELECTION_NOTIFY_EVENT,
+            sequence: 0,
+            time: request.time,
+            requestor: request.requestor,
+            selection: request.selection,
+            target: request.target,
+            property: request.property,
+        };
+        let event = xproto::SendEventRequest {
+            propagate: false,
+            destination: request.requestor,
+            event_mask: 0,
+            event: Cow::Owned(notify_event.into()),
+        };
+        info!("sent notification: {:?}", notify_event);
+        dpy.send_void_request(event, false).await?;
+
+        Ok(())
+        //dpy.send_event_checked(false, sr.requestor, EventMask::default(), notify_event).await?;
+    }
+
+    async fn handle_notify<D: AsyncDisplay>(
+        &mut self,
+        dpy: &mut D,
+        notification: &SelectionNotifyEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        match self.get_states.get(&notification.property) {
+            None => {
+                warn!("some other unhandled property changed: {}", notification.property);
+            }
+            Some(&GetTargets(property)) => {
+                debug!("got targets for {}", property);
+                let targets = dpy
+                    .get_property_immediate(false, self.getter, property, 0, 0, u32::MAX)
+                    .await?;
+                let mut properties = Vec::new();
+                dpy.delete_property_checked(self.getter, notification.property)
+                    .await?;
+                for prop_atom in targets.value.chunks(4) {
+                    if prop_atom.len() != 4 {
+                        warn!("got a non-aligned TARGETS reply");
+                        continue;
+                    }
+
+                    let atom = i32::from_le_bytes(prop_atom.try_into().unwrap());
+                    if atom == 0 {
+                        continue;
+                    }
+                    let name = self.get_atom_name(dpy, atom as xproto::Atom).await?;
+                    properties.push(name);
+                }
+                self.get_states.remove(&property);
+
+                debug!("available properties: {:?}", properties);
+                if properties.contains(&"UTF8_STRING".to_owned()) {
+                    let target = self.get_atom(dpy, &"UTF8_STRING", true).await?;
+                    self.fetch_string(dpy, notification.selection, target).await?;
+                } else {
+                    let images: Vec<&String> = properties
+                        .iter()
+                        .filter(|p| p.starts_with("image/"))
+                        .collect();
+                    if images.len() > 0 {
+                        // TODO: Chose the less lossy one
+                        let target =
+                            self.get_atom(dpy, images.first().unwrap(), true).await?;
+                        self.fetch_image(dpy, notification.selection, target).await?;
+                    }
+                }
+            }
+            Some(&GetText(property)) => {
+                if self.running {
+                    let value_reply = dpy
+                        .get_property_immediate(true, notification.requestor, notification.property, 0, 0, u32::MAX)
+                        .await?;
+                    let value = String::from_utf8_lossy(&value_reply.value).to_string();
+                    info!("property {} value ({}): {:?}", property, value.len(), value);
+                    let contents = ClipContents::Text(value);
+                    self.database.add_clip(Clip::new(
+                        db::Source::Primary,
+                        contents,
+                    ));
+                    self.get_states.remove(&property);
+                } else {
+                    debug!("got a potential clip - but we're paused so ignoring.");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn handle_event<D: AsyncDisplay>(
         &mut self,
         dpy: &mut D,
         event: &Event,
     ) -> Result<(), Box<dyn Error>> {
         match event {
-            Event::SelectionRequest(sr) => {
-                let targets_atom = self.get_atom(dpy, TARGETS, true).await?;
-                let string_atom = self.get_atom(dpy, "UTF8_STRING", false).await?;
-                if sr.target == targets_atom {
-                    // it wants to know what we serve
-                    match self.database.selection() {
-                        None => {
-                            debug!("requested - but nothing available");
-                            // we serve nothing
-                            let d = WrappedU8 { data: Vec::new() };
-                            dpy.change_property_checked(
-                                xproto::PropMode::REPLACE,
-                                sr.requestor,
-                                0,
-                                xproto::Atom::from(AtomEnum::ATOM),
-                                0,
-                                0,
-                                &d,
-                            )
-                                .await?;
-                        }
-                        Some(clip) => {
-                            let property = match &clip.contents.as_ref() {
-                                &ClipContents::Text(_) => {
-                                    string_atom
-                                }
-                            };
-                            debug!("requested - sending targets");
-                            // TODO: Decide what properties to actually have / clip
-                            let data: &[u32] = &[targets_atom, property];
-                            let mut data_u8: Vec<u8> = Vec::with_capacity(data.len() * 4);
-                            for item in data {
-                                data_u8.extend(&item.to_le_bytes());
-                            }
-                            debug!("sending data: {:?}", data_u8);
-                            let d = WrappedU8 { data: data_u8 };
-                            dpy.change_property_checked(
-                                xproto::PropMode::REPLACE,
-                                sr.requestor,
-                                sr.property,
-                                xproto::Atom::from(AtomEnum::ATOM),
-                                32,
-                                data.len().try_into().expect("too many elements"),
-                                &d,
-                            )
-                                .await?;
-                        }
-                    }
-                } else if sr.target == string_atom {
-                    let str = match self.database.selection() {
-                        None => {
-                            "n/a".to_owned()
-                        }
-                        Some(clip) => {
-                            match clip.contents.as_ref() {
-                                ClipContents::Text(txt) => txt.to_owned()
-                            }
-                        }
-                    };
-                    let d = WrappedU8 { data: Vec::from(str) };
-                    dpy.change_property_checked(
-                        xproto::PropMode::REPLACE,
-                        sr.requestor,
-                        sr.property,
-                        string_atom,
-                        8,
-                        d.data.len() as u32,
-                        &d,
-                    ).await?;
-                }
-                let notify_event = xproto::SelectionNotifyEvent {
-                    response_type: xproto::SELECTION_NOTIFY_EVENT,
-                    sequence: 0,
-                    time: sr.time,
-                    requestor: sr.requestor,
-                    selection: sr.selection,
-                    target: sr.target,
-                    property: sr.property,
-                };
-                let event = xproto::SendEventRequest {
-                    propagate: false,
-                    destination: sr.requestor,
-                    event_mask: 0,
-                    event: Cow::Owned(notify_event.into()),
-                };
-                info!("sent notification: {:?}", notify_event);
-                dpy.send_void_request(event, false).await?;
-
-                //dpy.send_event_checked(false, sr.requestor, EventMask::default(), notify_event).await?;
-            }
+            Event::SelectionRequest(sr) =>
+                self.handle_request(dpy, sr).await?,
             Event::XfixesSelectionNotify(sn) => {
                 if sn.owner != self.setter {
                     self.get_targets(dpy, sn.selection).await?;
                 }
             }
-            Event::SelectionNotify(sn) => {
-                match self.get_states.get(&sn.property) {
-                    None => {
-                        warn!("some other unhandled property changed: {}", sn.property);
-                    }
-                    Some(&GetTargets(property)) => {
-                        debug!("got targets for {}", property);
-                        let targets = dpy
-                            .get_property_immediate(false, self.getter, property, 0, 0, u32::MAX)
-                            .await?;
-                        let mut properties = Vec::new();
-                        dpy.delete_property_checked(self.getter, sn.property)
-                            .await?;
-                        for prop_atom in targets.value.chunks(4) {
-                            if prop_atom.len() != 4 {
-                                warn!("got a non-aligned TARGETS reply");
-                                continue;
-                            }
-
-                            let atom = i32::from_le_bytes(prop_atom.try_into().unwrap());
-                            if atom == 0 {
-                                continue;
-                            }
-                            let name = self.get_atom_name(dpy, atom as xproto::Atom).await?;
-                            properties.push(name);
-                        }
-                        self.get_states.remove(&property);
-
-                        debug!("available properties: {:?}", properties);
-                        if properties.contains(&"UTF8_STRING".to_owned()) {
-                            let target = self.get_atom(dpy, &"UTF8_STRING", true).await?;
-                            self.fetch_string(dpy, sn.selection, target).await?;
-                        } else {
-                            let images: Vec<&String> = properties
-                                .iter()
-                                .filter(|p| p.starts_with("image/"))
-                                .collect();
-                            if images.len() > 0 {
-                                // TODO: Chose the less lossy one
-                                let target =
-                                    self.get_atom(dpy, images.first().unwrap(), true).await?;
-                                self.fetch_image(dpy, sn.selection, target).await?;
-                            }
-                        }
-                    }
-                    Some(&GetText(property)) => {
-                        if self.running {
-                            let value_reply = dpy
-                                .get_property_immediate(true, sn.requestor, sn.property, 0, 0, u32::MAX)
-                                .await?;
-                            let value = String::from_utf8_lossy(&value_reply.value).to_string();
-                            info!("property {} value ({}): {:?}", property, value.len(), value);
-                            let contents = ClipContents::Text(value);
-                            self.database.add_clip(Clip::new(
-                                db::Source::Primary,
-                                contents,
-                            ));
-                            self.get_states.remove(&property);
-                        } else {
-                            debug!("got a potential clip - but we're paused so ignoring.");
-                        }
-                    }
-                }
-            }
+            Event::SelectionNotify(sn) =>
+                self.handle_notify(dpy, sn).await?,
             Event::PropertyNotify(pn) => {
                 if pn.window == self.getter {
                     if pn.state == xproto::Property::NEW_VALUE {
