@@ -6,7 +6,7 @@ use breadx::prelude::*;
 use breadx::protocol::xfixes::SelectionEventMask;
 use breadx::protocol::xproto::{AtomEnum, EventMask};
 use breadx::protocol::{xproto, Event};
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ enum GetState {
 
 // Note: To get around Void not being implemented for &[u8]
 struct WrappedU8 {
-    data: Vec<u8>
+    data: Vec<u8>,
 }
 
 impl breadx::Void for WrappedU8 {
@@ -61,7 +61,7 @@ impl Clipboard {
                     | SelectionEventMask::SELECTION_CLIENT_CLOSE
                     | SelectionEventMask::SELECTION_WINDOW_DESTROY,
             )
-            .await?;
+                .await?;
         }
 
         let mask = xproto::CreateWindowAux::new()
@@ -81,7 +81,7 @@ impl Clipboard {
             visual,
             mask,
         )
-        .await?;
+            .await?;
         dpy.create_window_checked(
             0,
             setter,
@@ -95,7 +95,7 @@ impl Clipboard {
             visual,
             mask,
         )
-        .await?;
+            .await?;
 
         let mut c = Clipboard {
             getter,
@@ -206,7 +206,7 @@ impl Clipboard {
             property,
             0, // TODO: Use something else than 0
         )
-        .await?;
+            .await?;
         Ok(property)
     }
 
@@ -231,16 +231,35 @@ impl Clipboard {
         Ok(())
     }
 
+    async fn take_selection<D: AsyncDisplay>(&mut self, dpy: &mut D, selection: xproto::Atom, mut tries: u8) -> Result<(), Box<dyn Error>> {
+        while tries > 0 {
+            dpy.set_selection_owner_checked(self.setter, selection, 0).await?;
+            let current_owner = dpy.get_selection_owner_immediate(selection).await?;
+            if current_owner.owner != self.setter {
+                if tries > 0 {
+                    warn!("unable to get ownership of selection {}, retrying", selection);
+                    tries -= 1;
+                } else {
+                    error!("unable to get ownership of selection {}, giving up", selection);
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn take_ownership<D: AsyncDisplay>(&mut self, dpy: &mut D) -> Result<(), Box<dyn Error>> {
         info!("taking ownership");
         let primary = self.get_atom(dpy, "PRIMARY", true).await?;
         let clipboard = self.get_atom(dpy, "CLIPBOARD", true).await?;
-        dpy.set_selection_owner_checked(self.setter, primary, 0).await?;
-        dpy.set_selection_owner_checked(self.setter, clipboard, 0).await?;
+
+        self.take_selection(dpy, primary, 3).await?;
+        self.take_selection(dpy, clipboard, 3).await?;
+
         Ok(())
     }
-
-
 
     pub async fn handle_event<D: AsyncDisplay>(
         &mut self,
@@ -267,7 +286,7 @@ impl Clipboard {
                                 0,
                                 &d,
                             )
-                            .await?;
+                                .await?;
                         }
                         Some(clip) => {
                             let property = match &clip.contents.as_ref() {
@@ -291,9 +310,9 @@ impl Clipboard {
                                 xproto::Atom::from(AtomEnum::ATOM),
                                 32,
                                 data.len().try_into().expect("too many elements"),
-                                &d
+                                &d,
                             )
-                            .await?;
+                                .await?;
                         }
                     }
                 } else if sr.target == string_atom {
@@ -315,7 +334,7 @@ impl Clipboard {
                         string_atom,
                         8,
                         d.data.len() as u32,
-                        &d
+                        &d,
                     ).await?;
                 }
                 let notify_event = xproto::SelectionNotifyEvent {
