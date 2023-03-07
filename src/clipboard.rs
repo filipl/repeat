@@ -335,7 +335,7 @@ impl Clipboard {
                 &d,
             ).await?;
         }
-        let notify_event = xproto::SelectionNotifyEvent {
+        let notify_event = SelectionNotifyEvent {
             response_type: xproto::SELECTION_NOTIFY_EVENT,
             sequence: 0,
             time: request.time,

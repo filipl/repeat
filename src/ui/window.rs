@@ -10,7 +10,8 @@ use breadx::protocol::{self, xproto::EventMask, Event};
 use breadx::{prelude::*, protocol::xproto};
 use breadx_keysyms::{keysyms, KeyboardState};
 use log::{debug, error};
-use crate::ui::window::WindowAction::{JustClose, StayOpen, TakeOwnership};
+use crate::clipboard::Clipboard;
+use crate::ui::window::WindowAction::{CloseWindow, StayOpen, TakeOwnership};
 
 pub struct Window {
     keyboard_state: KeyboardState,
@@ -31,8 +32,7 @@ struct Modes {
 }
 
 pub enum WindowAction {
-    TakeOwnership(Clip),
-    JustClose,
+    CloseWindow,
     StayOpen,
 }
 
@@ -175,6 +175,7 @@ impl Window {
         &mut self,
         display: &mut D,
         event: &Event,
+        clipboard: &mut Clipboard,
     ) -> Result<WindowAction, Box<dyn Error>> {
         match event {
             Event::KeyPress(kp) => {
@@ -183,7 +184,7 @@ impl Window {
                     keysyms::KEY_Escape => {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
-                        return Ok(JustClose);
+                        return Ok(CloseWindow);
                     }
                     keysyms::KEY_Up => {
                         if self.current_choice > 0 {
@@ -209,14 +210,18 @@ impl Window {
                         focus_window(display, self.focused_window).await?;
                         return if !self.searches.is_empty() {
                             // Send Shift + Insert
-                            send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
                             let choice = match self.searches.get(self.current_choice) {
-                                None => JustClose,
-                                Some(clip) => TakeOwnership(clip.clone()),
+                                None => CloseWindow,
+                                Some(clip) => {
+                                    self.database.select_clip(clip.clone());
+                                    clipboard.take_ownership(display).await?;
+                                    send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
+                                    CloseWindow
+                                }
                             };
                             Ok(choice)
                         } else {
-                            Ok(JustClose)
+                            Ok(CloseWindow)
                         };
                     }
                     key => {

@@ -65,13 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let keep_open = match locked_window.as_mut() {
                     Some(w) => {
                         let mut c = connection.lock().await;
-                        match w.handle_event(&mut *c, &event).await? {
-                            ui::WindowAction::TakeOwnership(clip) => {
-                                database.select_clip(clip);
-                                clipboard.take_ownership(&mut *c).await?;
-                                false
-                            }
-                            ui::WindowAction::JustClose => false,
+                        match w.handle_event(&mut *c, &event, &mut clipboard).await? {
+                            ui::WindowAction::CloseWindow => false,
                             ui::WindowAction::StayOpen => true,
                         }
                     },
