@@ -11,7 +11,7 @@ use breadx::{prelude::*, protocol::xproto};
 use breadx_keysyms::{keysyms, KeyboardState};
 use log::{debug, error};
 use crate::clipboard::Clipboard;
-use crate::ui::window::WindowAction::{CloseWindow, StayOpen, TakeOwnership};
+use crate::ui::window::WindowAction::{CloseWindow, StayOpen};
 
 pub struct Window {
     keyboard_state: KeyboardState,
@@ -171,6 +171,22 @@ impl Window {
         }
     }
 
+    fn selection_down(&mut self) -> bool {
+        if self.current_choice < self.searches.len() - 1 {
+            self.current_choice += 1;
+            self.redraw();
+        }
+        true
+    }
+
+    fn selection_up(&mut self) -> bool {
+        if self.current_choice > 0 {
+            self.current_choice -= 1;
+            self.redraw();
+        }
+        true
+    }
+
     pub async fn handle_event<D: AsyncDisplay>(
         &mut self,
         display: &mut D,
@@ -178,26 +194,46 @@ impl Window {
         clipboard: &mut Clipboard,
     ) -> Result<WindowAction, Box<dyn Error>> {
         match event {
+            Event::KeyRelease(kp) => {
+                let sym = self.keyboard_state.symbol_async(display, kp.detail, 0).await?;
+                match sym {
+                    keysyms::KEY_Control_L | keysyms::KEY_Control_R =>
+                        self.modes.ctrl = false,
+                    keysyms::KEY_Shift_L | keysyms::KEY_Shift_R =>
+                        self.modes.shift = false,
+                    _ => {}
+                }
+            }
             Event::KeyPress(kp) => {
                 let sym = self.keyboard_state.symbol_async(display, kp.detail, 0).await?;
                 let redraw = match sym {
+                    keysyms::KEY_Control_L | keysyms::KEY_Control_R => {
+                        self.modes.ctrl = true;
+                        false
+                    }
+                    keysyms::KEY_Shift_L | keysyms::KEY_Shift_R => {
+                        self.modes.shift = true;
+                        false
+                    }
+
                     keysyms::KEY_Escape => {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
                         return Ok(CloseWindow);
                     }
-                    keysyms::KEY_Up => {
-                        if self.current_choice > 0 {
-                            self.current_choice -= 1;
-                            self.redraw();
-                        }
-                        true
-                    }
-                    keysyms::KEY_Down => {
-                        if self.current_choice < self.searches.len() {
-                            self.current_choice += 1;
-                            self.redraw();
-                        }
+
+                    keysyms::KEY_K | keysyms::KEY_k if self.modes.ctrl =>
+                        self.selection_up(),
+                    keysyms::KEY_Up =>
+                        self.selection_up(),
+                    keysyms::KEY_J | keysyms::KEY_j if self.modes.ctrl =>
+                        self.selection_down(),
+                    keysyms::KEY_Down =>
+                        self.selection_down(),
+
+                    keysyms::KEY_u | keysyms::KEY_U if self.modes.ctrl => {
+                        self.input.clear();
+                        self.research();
                         true
                     }
                     keysyms::KEY_BackSpace => {
@@ -205,6 +241,7 @@ impl Window {
                         self.research();
                         true
                     }
+
                     keysyms::KEY_Return => {
                         self.hide(display).await?;
                         focus_window(display, self.focused_window).await?;
@@ -215,7 +252,9 @@ impl Window {
                                 Some(clip) => {
                                     self.database.select_clip(clip.clone());
                                     clipboard.take_ownership(display).await?;
-                                    send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
+                                    if !self.modes.ctrl {
+                                        send_key(display, self.focused_window, self.root, 118, ModMask::SHIFT).await?;
+                                    }
                                     CloseWindow
                                 }
                             };
@@ -224,9 +263,12 @@ impl Window {
                             Ok(CloseWindow)
                         };
                     }
+                    _ if self.modes.ctrl => {
+                        true
+                    }
                     key => {
                         if let Some(char) = char::from_u32(key) {
-                            self.input.push(char);
+                            self.input.push(if self.modes.shift { char.to_ascii_uppercase() } else { char });
                             self.research();
                         }
                         true
