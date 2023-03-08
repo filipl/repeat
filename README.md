@@ -14,4 +14,4 @@ popped up. `Ctrl` + `Enter` will put the chosen clip into both `primary` and
 
 ## Installation
 
-Clane and build.
+Clone and install with `cargo install --path .`.
