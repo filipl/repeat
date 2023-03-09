@@ -205,7 +205,8 @@ impl Window {
                 }
             }
             Event::KeyPress(kp) => {
-                let sym = self.keyboard_state.symbol_async(display, kp.detail, 0).await?;
+                let column = if self.modes.shift { 1 } else if self.modes.ctrl { 2 } else { 0 };
+                let sym = self.keyboard_state.symbol_async(display, kp.detail, column).await?;
                 let redraw = match sym {
                     keysyms::KEY_Control_L | keysyms::KEY_Control_R => {
                         self.modes.ctrl = true;
@@ -268,7 +269,7 @@ impl Window {
                     }
                     key => {
                         if let Some(char) = char::from_u32(key) {
-                            self.input.push(if self.modes.shift { char.to_ascii_uppercase() } else { char });
+                            self.input.push(char);
                             self.research();
                         }
                         true
